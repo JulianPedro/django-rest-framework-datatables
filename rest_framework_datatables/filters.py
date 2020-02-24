@@ -22,7 +22,7 @@ class DatatablesFilter(BaseFilterBackend):
             data = getter(col % (i, 'data'))
             # break out only when there are no more
             # fields to get.
-            if data is None:
+            if data is None or not data:
                 break
             name = getter(col % (i, 'name'))
             if not name:

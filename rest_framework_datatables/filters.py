@@ -190,7 +190,7 @@ class DatatablesFilterBackendMongoEngine(DatatablesFilter):
                         # iterate through the list created from the 'name'
                         # param and create a string of 'ior' QMongoEngine() objects.
                         for x in f['name']:
-                            q |= QMongoEngine(**{'%s__iregex' % x: search_value})
+                            q |= QMongoEngine(**{'%s' % x: re.compile(search_value)})
                 else:
                     # same as above.
                     for x in f['name']:
@@ -204,7 +204,7 @@ class DatatablesFilterBackendMongoEngine(DatatablesFilter):
                         # objects adhering to the field's name criteria.
                         temp_q = QMongoEngine()
                         for x in f['name']:
-                            temp_q |= QMongoEngine(**{'%s__iregex' % x: f_search_value})
+                            temp_q |= QMongoEngine(**{'%s' % x: re.compile(f_search_value)})
                         # Use deepcopy() to transfer them to the global QMongoEngine()
                         # object. Deepcopy() necessary, since the var will be
                         # reinstantiated next iteration.

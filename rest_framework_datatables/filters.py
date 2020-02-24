@@ -100,38 +100,38 @@ class DatatablesFilterBackend(DatatablesFilter):
 
         # filter queryset
         q = Q()
-        for field in fields:
-            if not field['searchable']:
+        for f in fields:
+            if not f['searchable']:
                 continue
             if search_value and search_value != 'false':
                 if search_regex:
                     if self.is_valid_regex(search_value):
                         # iterate through the list created from the 'name'
                         # param and create a string of 'ior' Q() objects.
-                        for value in field['name']:
-                            q |= Q(**{'%s__iregex' % value: search_value})
+                        for x in f['name']:
+                            q |= Q(**{'%s__iregex' % x: search_value})
                 else:
                     # same as above.
-                    for value in field['name']:
-                        q |= Q(**{'%s__icontains' % value: search_value})
-            f_search_value = field.get('search_value')
-            f_search_regex = field.get('search_regex') == 'true'
+                    for x in f['name']:
+                        q |= Q(**{'%s__icontains' % x: search_value})
+            f_search_value = f.get('search_value')
+            f_search_regex = f.get('search_regex') == 'true'
             if f_search_value:
                 if f_search_regex:
                     if self.is_valid_regex(f_search_value):
                         # create a temporary q variable to hold the Q()
                         # objects adhering to the field's name criteria.
                         temp_q = Q()
-                        for value in field['name']:
-                            temp_q |= Q(**{'%s__iregex' % value: f_search_value})
+                        for x in f['name']:
+                            temp_q |= Q(**{'%s__iregex' % x: f_search_value})
                         # Use deepcopy() to transfer them to the global Q()
                         # object. Deepcopy() necessary, since the var will be
                         # reinstantiated next iteration.
                         q = q & deepcopy(temp_q)
                 else:
                     temp_q = Q()
-                    for value in field['name']:
-                        temp_q |= Q(**{'%s__icontains' % value: f_search_value})
+                    for x in f['name']:
+                        temp_q |= Q(**{'%s__icontains' % x: f_search_value})
                     q = q & deepcopy(temp_q)
 
         if q:
@@ -153,6 +153,7 @@ class DatatablesFilterBackend(DatatablesFilter):
                 if not any((o[1:] if o[0] == '-' else o) == additional
                            for o in ordering):
                     ordering.append(additional)
+
             queryset = queryset.order_by(*ordering)
         return queryset
 
@@ -180,42 +181,42 @@ class DatatablesFilterBackendMongoEngine(DatatablesFilter):
 
         # filter queryset
         q = QMongoEngine()
-        for field in fields:
-            if not field['searchable']:
+        for f in fields:
+            if not f['searchable']:
                 continue
             if search_value and search_value != 'false':
                 if search_regex:
                     if self.is_valid_regex(search_value):
                         # iterate through the list created from the 'name'
-                        # param and create a string of 'ior' Q() objects.
-                        for value in field['name']:
-                            q |= QMongoEngine(**{'%s__iregex' % value: search_value})
+                        # param and create a string of 'ior' QMongoEngine() objects.
+                        for x in f['name']:
+                            q |= QMongoEngine(**{'%s__iregex' % x: search_value})
                 else:
                     # same as above.
-                    for value in field['name']:
-                        q |= QMongoEngine(**{'%s__icontains' % value: search_value})
-            f_search_value = field.get('search_value')
-            f_search_regex = field.get('search_regex') == 'true'
+                    for x in f['name']:
+                        q |= QMongoEngine(**{'%s__icontains' % x: search_value})
+            f_search_value = f.get('search_value')
+            f_search_regex = f.get('search_regex') == 'true'
             if f_search_value:
                 if f_search_regex:
                     if self.is_valid_regex(f_search_value):
-                        # create a temporary q variable to hold the Q()
+                        # create a temporary q variable to hold the QMongoEngine()
                         # objects adhering to the field's name criteria.
                         temp_q = QMongoEngine()
-                        for value in field['name']:
-                            temp_q |= QMongoEngine(**{'%s__iregex' % value: f_search_value})
-                        # Use deepcopy() to transfer them to the global Q()
+                        for x in f['name']:
+                            temp_q |= QMongoEngine(**{'%s__iregex' % x: f_search_value})
+                        # Use deepcopy() to transfer them to the global QMongoEngine()
                         # object. Deepcopy() necessary, since the var will be
                         # reinstantiated next iteration.
                         q = q & deepcopy(temp_q)
                 else:
                     temp_q = QMongoEngine()
-                    for value in field['name']:
-                        temp_q |= QMongoEngine(**{'%s__icontains' % value: f_search_value})
+                    for x in f['name']:
+                        temp_q |= QMongoEngine(**{'%s__icontains' % x: f_search_value})
                     q = q & deepcopy(temp_q)
 
         if q:
-            queryset = queryset.filter(q)
+            queryset = queryset.filter(q).distinct()
             filtered_count = queryset.count()
         else:
             filtered_count = filtered_count_before
@@ -233,5 +234,7 @@ class DatatablesFilterBackendMongoEngine(DatatablesFilter):
                 if not any((o[1:] if o[0] == '-' else o) == additional
                            for o in ordering):
                     ordering.append(additional)
+
             queryset = queryset.order_by(*ordering)
         return queryset
+

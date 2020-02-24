@@ -7,9 +7,79 @@ from mongoengine.queryset.visitor import Q as QMongoEngine
 from rest_framework.filters import BaseFilterBackend
 
 
-class DatatablesFilterBackend(BaseFilterBackend):
+class DatatablesFilter(BaseFilterBackend):
     """
     Filter that works with datatables params.
+    """
+    def filter_queryset(self, request, queryset, view):
+        raise NotImplementedError
+
+    def get_fields(self, getter):
+        fields = []
+        i = 0
+        while True:
+            col = 'columns[%d][%s]'
+            data = getter(col % (i, 'data'))
+            # break out only when there are no more
+            # fields to get.
+            if data is None:
+                break
+            name = getter(col % (i, 'name'))
+            if not name:
+                name = data
+            search_col = col % (i, 'search')
+            # to be able to search across multiple fields (e.g. to search
+            # through concatenated names), we create a list of the name field,
+            # replacing dot notation with double-underscores and splitting
+            # along the commas.
+            field = {
+                'name': [
+                    n.lstrip() for n in name.replace('.', '__').split(',')
+                ],
+                'data': data,
+                'searchable': getter(col % (i, 'searchable')) == 'true',
+                'orderable': getter(col % (i, 'orderable')) == 'true',
+                'search_value': getter('%s[%s]' % (search_col, 'value')),
+                'search_regex': getter('%s[%s]' % (search_col, 'regex')),
+            }
+            fields.append(field)
+            i += 1
+        return fields
+
+    def get_ordering(self, getter, fields):
+        ordering = []
+        i = 0
+        while True:
+            col = 'order[%d][%s]'
+            idx = getter(col % (i, 'column'))
+            if idx is None:
+                break
+            try:
+                field = fields[int(idx)]
+            except IndexError:
+                i += 1
+                continue
+            if not field['orderable']:
+                i += 1
+                continue
+            dir_ = getter(col % (i, 'dir'), 'asc')
+            ordering.append('%s%s' % (
+                '-' if dir_ == 'desc' else '',
+                field['name'][0]
+            ))
+            i += 1
+        return ordering
+
+    def is_valid_regex(cls, regex):
+        try:
+            re.compile(regex)
+            return True
+        except re.error:
+            return False
+
+class DatatablesFilterBackend(DatatablesFilter):
+    """
+    Filter that works with datatables default database params.
     """
     def filter_queryset(self, request, queryset, view):
         if request.accepted_renderer.format != 'datatables':
@@ -30,38 +100,38 @@ class DatatablesFilterBackend(BaseFilterBackend):
 
         # filter queryset
         q = Q()
-        for f in fields:
-            if not f['searchable']:
+        for field in fields:
+            if not field['searchable']:
                 continue
             if search_value and search_value != 'false':
                 if search_regex:
                     if self.is_valid_regex(search_value):
                         # iterate through the list created from the 'name'
                         # param and create a string of 'ior' Q() objects.
-                        for x in f['name']:
-                            q |= Q(**{'%s__iregex' % x: search_value})
+                        for value in field['name']:
+                            q |= Q(**{'%s__iregex' % value: search_value})
                 else:
                     # same as above.
-                    for x in f['name']:
-                        q |= Q(**{'%s__icontains' % x: search_value})
-            f_search_value = f.get('search_value')
-            f_search_regex = f.get('search_regex') == 'true'
+                    for value in field['name']:
+                        q |= Q(**{'%s__icontains' % value: search_value})
+            f_search_value = field.get('search_value')
+            f_search_regex = field.get('search_regex') == 'true'
             if f_search_value:
                 if f_search_regex:
                     if self.is_valid_regex(f_search_value):
                         # create a temporary q variable to hold the Q()
                         # objects adhering to the field's name criteria.
                         temp_q = Q()
-                        for x in f['name']:
-                            temp_q |= Q(**{'%s__iregex' % x: f_search_value})
+                        for value in field['name']:
+                            temp_q |= Q(**{'%s__iregex' % value: f_search_value})
                         # Use deepcopy() to transfer them to the global Q()
                         # object. Deepcopy() necessary, since the var will be
                         # reinstantiated next iteration.
                         q = q & deepcopy(temp_q)
                 else:
                     temp_q = Q()
-                    for x in f['name']:
-                        temp_q |= Q(**{'%s__icontains' % x: f_search_value})
+                    for value in field['name']:
+                        temp_q |= Q(**{'%s__icontains' % value: f_search_value})
                     q = q & deepcopy(temp_q)
 
         if q:
@@ -83,77 +153,13 @@ class DatatablesFilterBackend(BaseFilterBackend):
                 if not any((o[1:] if o[0] == '-' else o) == additional
                            for o in ordering):
                     ordering.append(additional)
-
             queryset = queryset.order_by(*ordering)
         return queryset
 
-    def get_fields(self, getter):
-        fields = []
-        i = 0
-        while True:
-            col = 'columns[%d][%s]'
-            data = getter(col % (i, 'data'))
-            # break out only when there are no more
-            # fields to get.
-            if data is None:
-                break
-            name = getter(col % (i, 'name'))
-            if not name:
-                name = data
-            search_col = col % (i, 'search')
-            # to be able to search across multiple fields (e.g. to search
-            # through concatenated names), we create a list of the name field,
-            # replacing dot notation with double-underscores and splitting
-            # along the commas.
-            field = {
-                'name': [
-                    n.lstrip() for n in name.replace('.', '__').split(',')
-                ],
-                'data': data,
-                'searchable': getter(col % (i, 'searchable')) == 'true',
-                'orderable': getter(col % (i, 'orderable')) == 'true',
-                'search_value': getter('%s[%s]' % (search_col, 'value')),
-                'search_regex': getter('%s[%s]' % (search_col, 'regex')),
-            }
-            fields.append(field)
-            i += 1
-        return fields
 
-    def get_ordering(self, getter, fields):
-        ordering = []
-        i = 0
-        while True:
-            col = 'order[%d][%s]'
-            idx = getter(col % (i, 'column'))
-            if idx is None:
-                break
-            try:
-                field = fields[int(idx)]
-            except IndexError:
-                i += 1
-                continue
-            if not field['orderable']:
-                i += 1
-                continue
-            dir_ = getter(col % (i, 'dir'), 'asc')
-            ordering.append('%s%s' % (
-                '-' if dir_ == 'desc' else '',
-                field['name'][0]
-            ))
-            i += 1
-        return ordering
-
-    def is_valid_regex(cls, regex):
-        try:
-            re.compile(regex)
-            return True
-        except re.error:
-            return False
-
-
-class DatatablesFilterBackendMongoEngine(BaseFilterBackend):
+class DatatablesFilterBackendMongoEngine(DatatablesFilter):
     """
-    Filter that works with datatables params.
+    Filter that works with datatables mongoengine params.
     """
     def filter_queryset(self, request, queryset, view):
         if request.accepted_renderer.format != 'datatables':
@@ -174,42 +180,42 @@ class DatatablesFilterBackendMongoEngine(BaseFilterBackend):
 
         # filter queryset
         q = QMongoEngine()
-        for f in fields:
-            if not f['searchable']:
+        for field in fields:
+            if not field['searchable']:
                 continue
             if search_value and search_value != 'false':
                 if search_regex:
                     if self.is_valid_regex(search_value):
                         # iterate through the list created from the 'name'
                         # param and create a string of 'ior' Q() objects.
-                        for x in f['name']:
-                            q |= QMongoEngine(**{'%s__iregex' % x: search_value})
+                        for value in field['name']:
+                            q |= QMongoEngine(**{'%s__iregex' % value: search_value})
                 else:
                     # same as above.
-                    for x in f['name']:
-                        q |= QMongoEngine(**{'%s__icontains' % x: search_value})
-            f_search_value = f.get('search_value')
-            f_search_regex = f.get('search_regex') == 'true'
+                    for value in field['name']:
+                        q |= QMongoEngine(**{'%s__icontains' % value: search_value})
+            f_search_value = field.get('search_value')
+            f_search_regex = field.get('search_regex') == 'true'
             if f_search_value:
                 if f_search_regex:
                     if self.is_valid_regex(f_search_value):
                         # create a temporary q variable to hold the Q()
                         # objects adhering to the field's name criteria.
                         temp_q = QMongoEngine()
-                        for x in f['name']:
-                            temp_q |= QMongoEngine(**{'%s__iregex' % x: f_search_value})
+                        for value in field['name']:
+                            temp_q |= QMongoEngine(**{'%s__iregex' % value: f_search_value})
                         # Use deepcopy() to transfer them to the global Q()
                         # object. Deepcopy() necessary, since the var will be
                         # reinstantiated next iteration.
                         q = q & deepcopy(temp_q)
                 else:
                     temp_q = QMongoEngine()
-                    for x in f['name']:
-                        temp_q |= QMongoEngine(**{'%s__icontains' % x: f_search_value})
+                    for value in field['name']:
+                        temp_q |= QMongoEngine(**{'%s__icontains' % value: f_search_value})
                     q = q & deepcopy(temp_q)
 
         if q:
-            queryset = queryset.filter(q).distinct()
+            queryset = queryset.filter(q)
             filtered_count = queryset.count()
         else:
             filtered_count = filtered_count_before
@@ -227,69 +233,5 @@ class DatatablesFilterBackendMongoEngine(BaseFilterBackend):
                 if not any((o[1:] if o[0] == '-' else o) == additional
                            for o in ordering):
                     ordering.append(additional)
-
             queryset = queryset.order_by(*ordering)
         return queryset
-
-    def get_fields(self, getter):
-        fields = []
-        i = 0
-        while True:
-            col = 'columns[%d][%s]'
-            data = getter(col % (i, 'data'))
-            # break out only when there are no more
-            # fields to get.
-            if data is None:
-                break
-            name = getter(col % (i, 'name'))
-            if not name:
-                name = data
-            search_col = col % (i, 'search')
-            # to be able to search across multiple fields (e.g. to search
-            # through concatenated names), we create a list of the name field,
-            # replacing dot notation with double-underscores and splitting
-            # along the commas.
-            field = {
-                'name': [
-                    n.lstrip() for n in name.replace('.', '__').split(',')
-                ],
-                'data': data,
-                'searchable': getter(col % (i, 'searchable')) == 'true',
-                'orderable': getter(col % (i, 'orderable')) == 'true',
-                'search_value': getter('%s[%s]' % (search_col, 'value')),
-                'search_regex': getter('%s[%s]' % (search_col, 'regex')),
-            }
-            fields.append(field)
-            i += 1
-        return fields
-
-    def get_ordering(self, getter, fields):
-        ordering = []
-        i = 0
-        while True:
-            col = 'order[%d][%s]'
-            idx = getter(col % (i, 'column'))
-            if idx is None:
-                break
-            try:
-                field = fields[int(idx)]
-            except IndexError:
-                i += 1
-                continue
-            if not field['orderable']:
-                i += 1
-                continue
-            dir_ = getter(col % (i, 'dir'), 'asc')
-            ordering.append('%s%s' % (
-                '-' if dir_ == 'desc' else '',
-                field['name'][0]
-            ))
-            i += 1
-        return ordering
-
-    def is_valid_regex(cls, regex):
-        try:
-            re.compile(regex)
-            return True
-        except re.error:
-            return False

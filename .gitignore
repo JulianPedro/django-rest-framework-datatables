@@ -13,3 +13,4 @@ dist/
 MANIFEST
 docs/_build
 /.idea
+.vscode/

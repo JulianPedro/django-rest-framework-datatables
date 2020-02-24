@@ -216,7 +216,7 @@ class DatatablesFilterBackendMongoEngine(DatatablesFilter):
                     q = q & deepcopy(temp_q)
 
         if q:
-            queryset = queryset.filter(q).distinct()
+            queryset = queryset.filter(q)
             filtered_count = queryset.count()
         else:
             filtered_count = filtered_count_before

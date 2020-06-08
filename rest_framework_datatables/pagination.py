@@ -10,10 +10,11 @@ from rest_framework.pagination import (
 
 try:
     from django.utils import six
-
-    text_type = six.text_type
+    text_type = six.text_type  # pragma: no cover
 except ImportError:
     text_type = str
+
+from .utils import get_param
 
 
 class DatatablesMixin(object):
@@ -49,7 +50,7 @@ class DatatablesPageNumberPagination(DatatablesMixin, PageNumberPagination):
                 DatatablesPageNumberPagination, self
             ).paginate_queryset(queryset, request, view)
 
-        length = request.query_params.get('length')
+        length = get_param(request, 'length')
 
         if length is None or length == '-1':
             return None
@@ -62,8 +63,17 @@ class DatatablesPageNumberPagination(DatatablesMixin, PageNumberPagination):
         if not page_size:  # pragma: no cover
             return None
 
-        paginator = self.django_paginator_class(queryset, page_size)
-        start = int(request.query_params.get('start', 0))
+        class CachedCountPaginator(self.django_paginator_class):
+            def __init__(self, value, *args, **kwargs):
+                self.value = value
+                super(CachedCountPaginator, self).__init__(*args, **kwargs)
+
+            @property
+            def count(self):
+                return self.value
+
+        paginator = CachedCountPaginator(self.count, queryset, page_size)
+        start = int(get_param(request, 'start', 0))
         page_number = int(start / page_size) + 1
 
         try:
@@ -78,10 +88,32 @@ class DatatablesPageNumberPagination(DatatablesMixin, PageNumberPagination):
 
 
 class DatatablesLimitOffsetPagination(DatatablesMixin, LimitOffsetPagination):
+    def get_limit(self, request):
+        try:
+            limit_value = int(get_param(request, self.limit_query_param))
+            if limit_value <= 0:
+                raise ValueError
+
+            if self.max_limit is not None:
+                return min(limit_value, self.max_limit)
+            return limit_value
+        except ValueError:
+            return self.default_limit
+
+    def get_offset(self, request):
+        try:
+            offset_value = int(get_param(request, self.offset_query_param))
+            if offset_value < 0:
+                raise ValueError
+
+            return offset_value
+        except ValueError:
+            return 0
+
     def paginate_queryset(self, queryset, request, view=None):
         if request.accepted_renderer.format == 'datatables':
             self.is_datatable_request = True
-            if request.query_params.get('length') is None:
+            if get_param(request, 'length') is None:
                 return None
             self.limit_query_param = 'length'
             self.offset_query_param = 'start'

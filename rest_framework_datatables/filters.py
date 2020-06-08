@@ -1,30 +1,78 @@
 import re
-from copy import deepcopy
+from functools import reduce
+import operator
 
 from django.db.models import Q
 from mongoengine.queryset.visitor import Q as QMongoEngine
 
 from rest_framework.filters import BaseFilterBackend
 
+from .utils import get_param
 
-class DatatablesFilter(BaseFilterBackend):
-    """
-    Filter that works with datatables params.
-    """
-    def filter_queryset(self, request, queryset, view):
-        raise NotImplementedError
 
-    def get_fields(self, getter):
+def is_valid_regex(regex):
+    """helper function that checks regex for validity"""
+    status = False
+    result = None
+    try:
+        result = re.compile(regex)
+        status =  True
+    except re.error:
+        status = False
+    return status, result
+
+
+def f_search_q(f, search_value, search_regex=False, mongo_engine_search=False):
+    """helper function that returns a Q-object for a search value"""
+    search_q = Q
+    if mongo_engine_search:
+        search_q = QMongoEngine
+    qs = []
+    if search_value and search_value != 'false':
+        if search_regex:
+            status, result = is_valid_regex(search_value)
+            if status:
+                for x in f['name']:
+                    if mongo_engine_search:
+                        qs.append(QMongoEngine(**{'%s' % x: result}))
+                    else:
+                        qs.append(Q(**{'%s__iregex' % x: search_value}))
+        else:
+            for x in f['name']:
+                qs.append(search_q(**{'%s__icontains' % x: search_value}))
+    return reduce(operator.or_, qs, search_q())
+
+
+class DatatablesBaseFilterBackend(BaseFilterBackend):
+    """Base class for definining your own DatatablesFilterBackend classes"""
+
+    def check_renderer_format(self, request):
+        return request.accepted_renderer.format == 'datatables'
+
+    def parse_datatables_query(self, request, view):
+        """parse request.query_params into a list of fields and orderings and
+        global search parameters (value and regex)"""
+        ret = {}
+        ret['fields'] = self.get_fields(request)
+        ret['search_value'] = get_param(request, 'search[value]')
+        ret['search_regex'] = get_param(request, 'search[regex]') == 'true'
+        return ret
+
+    def get_fields(self, request):
+        """called by parse_query_params to get the list of fields"""
         fields = []
         i = 0
         while True:
             col = 'columns[%d][%s]'
-            data = getter(col % (i, 'data'))
-            # break out only when there are no more
-            # fields to get.
-            if data is None or not data:
+            data = get_param(request, col % (i, 'data'))
+            if data == "":  # null or empty string on datatables (JS) side
+                fields.append({'searchable': False, 'orderable': False})
+                i += 1
+                continue
+            # break out only when there are no more fields to get.
+            if data is None:
                 break
-            name = getter(col % (i, 'name'))
+            name = get_param(request, col % (i, 'name'))
             if not name:
                 name = data
             search_col = col % (i, 'search')
@@ -37,21 +85,38 @@ class DatatablesFilter(BaseFilterBackend):
                     n.lstrip() for n in name.replace('.', '__').split(',')
                 ],
                 'data': data,
-                'searchable': getter(col % (i, 'searchable')) == 'true',
-                'orderable': getter(col % (i, 'orderable')) == 'true',
-                'search_value': getter('%s[%s]' % (search_col, 'value')),
-                'search_regex': getter('%s[%s]' % (search_col, 'regex')),
+                'searchable': get_param(
+                    request, col % (i, 'searchable')
+                ) == 'true',
+                'orderable': get_param(
+                    request, col % (i, 'orderable')
+                ) == 'true',
+                'search_value': get_param(
+                    request, '%s[%s]' % (search_col, 'value')
+                ),
+                'search_regex': get_param(
+                    request, '%s[%s]' % (search_col, 'regex')
+                ) == 'true',
             }
             fields.append(field)
             i += 1
         return fields
 
-    def get_ordering(self, getter, fields):
-        ordering = []
+    def get_ordering_fields(self, request, view, fields):
+        """called by parse_query_params to get the ordering
+
+        return value must be a list of tuples.
+        (field, dir)
+
+        field is the field to order by and dir is the direction of the
+        ordering ('asc' or 'desc').
+
+        """
+        ret = []
         i = 0
         while True:
             col = 'order[%d][%s]'
-            idx = getter(col % (i, 'column'))
+            idx = get_param(request, col % (i, 'column'))
             if idx is None:
                 break
             try:
@@ -62,88 +127,26 @@ class DatatablesFilter(BaseFilterBackend):
             if not field['orderable']:
                 i += 1
                 continue
-            dir_ = getter(col % (i, 'dir'), 'asc')
-            ordering.append('%s%s' % (
-                '-' if dir_ == 'desc' else '',
-                field['name'][0]
-            ))
+            dir_ = get_param(request, col % (i, 'dir'), 'asc')
+            ret.append((field, dir_))
             i += 1
-        return ordering
+        return ret
 
-    def is_valid_regex(cls, regex):
-        try:
-            re.compile(regex)
-            return True
-        except re.error:
-            return False
-
-class DatatablesFilterBackend(DatatablesFilter):
-    """
-    Filter that works with datatables default database params.
-    """
-    def filter_queryset(self, request, queryset, view):
-        if request.accepted_renderer.format != 'datatables':
-            return queryset
-
-        filtered_count_before = queryset.count()
-        total_count = view.get_queryset().count()
+    def set_count_before(self, view, total_count):
         # set the queryset count as an attribute of the view for later
         # TODO: find a better way than this hack
         setattr(view, '_datatables_total_count', total_count)
 
-        # parse query params
-        getter = request.query_params.get
-        fields = self.get_fields(getter)
-        ordering = self.get_ordering(getter, fields)
-        search_value = getter('search[value]')
-        search_regex = getter('search[regex]') == 'true'
+    def set_count_after(self, view, filtered_count):
+        """called by filter_queryset to store the ordering after the filter
+        operations
 
-        # filter queryset
-        q = Q()
-        for f in fields:
-            if not f['searchable']:
-                continue
-            if search_value and search_value != 'false':
-                if search_regex:
-                    if self.is_valid_regex(search_value):
-                        # iterate through the list created from the 'name'
-                        # param and create a string of 'ior' Q() objects.
-                        for x in f['name']:
-                            q |= Q(**{'%s__iregex' % x: search_value})
-                else:
-                    # same as above.
-                    for x in f['name']:
-                        q |= Q(**{'%s__icontains' % x: search_value})
-            f_search_value = f.get('search_value')
-            f_search_regex = f.get('search_regex') == 'true'
-            if f_search_value:
-                if f_search_regex:
-                    if self.is_valid_regex(f_search_value):
-                        # create a temporary q variable to hold the Q()
-                        # objects adhering to the field's name criteria.
-                        temp_q = Q()
-                        for x in f['name']:
-                            temp_q |= Q(**{'%s__iregex' % x: f_search_value})
-                        # Use deepcopy() to transfer them to the global Q()
-                        # object. Deepcopy() necessary, since the var will be
-                        # reinstantiated next iteration.
-                        q = q & deepcopy(temp_q)
-                else:
-                    temp_q = Q()
-                    for x in f['name']:
-                        temp_q |= Q(**{'%s__icontains' % x: f_search_value})
-                    q = q & deepcopy(temp_q)
-
-        if q:
-            queryset = queryset.filter(q).distinct()
-            filtered_count = queryset.count()
-        else:
-            filtered_count = filtered_count_before
+        """
         # set the queryset count as an attribute of the view for later
         # TODO: maybe find a better way than this hack ?
         setattr(view, '_datatables_filtered_count', filtered_count)
 
-        # order queryset
+    def append_additional_ordering(self, ordering, view):
         if len(ordering):
             if hasattr(view, 'datatables_additional_order_by'):
                 additional = view.datatables_additional_order_by
@@ -154,8 +157,83 @@ class DatatablesFilterBackend(DatatablesFilter):
                            for o in ordering):
                     ordering.append(additional)
 
+
+class DatatablesFilterBackend(DatatablesBaseFilterBackend):
+    """
+    Filter that works with datatables params.
+    """
+    def filter_queryset(self, request, queryset, view):
+        """filter the queryset
+
+        subclasses overriding this method should make sure to do all
+        necessary steps
+
+        -  Return unfiltered queryset if accepted renderer format is
+           not 'datatables' (via `check_renderer_format`)
+
+        - store the counts before and after filtering with
+          `set_count_before` and `set_count_after`
+
+        - respect ordering (in `ordering` key of parsed datatables
+          query)
+
+        """
+        if not self.check_renderer_format(request):
+            return queryset
+
+        total_count = view.get_queryset().count()
+        self.set_count_before(view, total_count)
+
+        if len(getattr(view, 'filter_backends', [])) > 1:
+            # case of a view with more than 1 filter backend
+            filtered_count_before = queryset.count()
+        else:
+            filtered_count_before = total_count
+
+        datatables_query = self.parse_datatables_query(request, view)
+
+        q = self.get_q(datatables_query)
+        if q:
+            queryset = queryset.filter(q).distinct()
+            filtered_count = queryset.count()
+        else:
+            filtered_count = filtered_count_before
+        self.set_count_after(view, filtered_count)
+
+        ordering = self.get_ordering(request, view, datatables_query['fields'])
+        if ordering:
             queryset = queryset.order_by(*ordering)
+
         return queryset
+
+    def get_q(self, datatables_query):
+        q = Q()
+        for f in datatables_query['fields']:
+            if not f['searchable']:
+                continue
+            q |= f_search_q(f,
+                            datatables_query['search_value'],
+                            datatables_query['search_regex'])
+            q &= f_search_q(f,
+                            f.get('search_value'),
+                            f.get('search_regex', False))
+        return q
+
+    def get_ordering(self, request, view, fields):
+        """called by parse_query_params to get the ordering
+
+        return value must be a valid list of arguments for order_by on
+        a queryset
+
+        """
+        ordering = []
+        for field, dir_ in self.get_ordering_fields(request, view, fields):
+            ordering.append('%s%s' % (
+                '-' if dir_ == 'desc' else '',
+                field['name'][0]
+            ))
+        self.append_additional_ordering(ordering, view)
+        return ordering
 
 
 class DatatablesFilterBackendMongoEngine(DatatablesFilter):
@@ -163,78 +241,79 @@ class DatatablesFilterBackendMongoEngine(DatatablesFilter):
     Filter that works with datatables mongoengine params.
     """
     def filter_queryset(self, request, queryset, view):
-        if request.accepted_renderer.format != 'datatables':
+        """filter the queryset
+
+        subclasses overriding this method should make sure to do all
+        necessary steps
+
+        -  Return unfiltered queryset if accepted renderer format is
+           not 'datatables' (via `check_renderer_format`)
+
+        - store the counts before and after filtering with
+          `set_count_before` and `set_count_after`
+
+        - respect ordering (in `ordering` key of parsed datatables
+          query)
+
+        - works with mongoengine
+
+        """
+        if not self.check_renderer_format(request):
             return queryset
 
-        filtered_count_before = queryset.count()
         total_count = view.get_queryset().count()
-        # set the queryset count as an attribute of the view for later
-        # TODO: find a better way than this hack
-        setattr(view, '_datatables_total_count', total_count)
+        self.set_count_before(view, total_count)
 
-        # parse query params
-        getter = request.query_params.get
-        fields = self.get_fields(getter)
-        ordering = self.get_ordering(getter, fields)
-        search_value = getter('search[value]')
-        search_regex = getter('search[regex]') == 'true'
+        if len(getattr(view, 'filter_backends', [])) > 1:
+            # case of a view with more than 1 filter backend
+            filtered_count_before = queryset.count()
+        else:
+            filtered_count_before = total_count
 
-        # filter queryset
-        q = QMongoEngine()
-        for f in fields:
-            if not f['searchable']:
-                continue
-            if search_value and search_value != 'false':
-                if search_regex:
-                    if self.is_valid_regex(search_value):
-                        # iterate through the list created from the 'name'
-                        # param and create a string of 'ior' QMongoEngine() objects.
-                        for x in f['name']:
-                            q |= QMongoEngine(**{'%s' % x: re.compile(search_value)})
-                else:
-                    # same as above.
-                    for x in f['name']:
-                        q |= QMongoEngine(**{'%s__icontains' % x: search_value})
-            f_search_value = f.get('search_value')
-            f_search_regex = f.get('search_regex') == 'true'
-            if f_search_value:
-                if f_search_regex:
-                    if self.is_valid_regex(f_search_value):
-                        # create a temporary q variable to hold the QMongoEngine()
-                        # objects adhering to the field's name criteria.
-                        temp_q = QMongoEngine()
-                        for x in f['name']:
-                            temp_q |= QMongoEngine(**{'%s' % x: re.compile(f_search_value)})
-                        # Use deepcopy() to transfer them to the global QMongoEngine()
-                        # object. Deepcopy() necessary, since the var will be
-                        # reinstantiated next iteration.
-                        q = q & deepcopy(temp_q)
-                else:
-                    temp_q = QMongoEngine()
-                    for x in f['name']:
-                        temp_q |= QMongoEngine(**{'%s__icontains' % x: f_search_value})
-                    q = q & deepcopy(temp_q)
+        datatables_query = self.parse_datatables_query(request, view)
 
+        q = self.get_q(datatables_query)
         if q:
-            queryset = queryset.filter(q)
+            queryset = queryset.filter(q).distinct()
             filtered_count = queryset.count()
         else:
             filtered_count = filtered_count_before
-        # set the queryset count as an attribute of the view for later
-        # TODO: maybe find a better way than this hack ?
-        setattr(view, '_datatables_filtered_count', filtered_count)
+        self.set_count_after(view, filtered_count)
 
-        # order queryset
-        if len(ordering):
-            if hasattr(view, 'datatables_additional_order_by'):
-                additional = view.datatables_additional_order_by
-                # Django will actually only take the first occurrence if the
-                # same column is added multiple times in an order_by, but it
-                # feels cleaner to double check for duplicate anyway.
-                if not any((o[1:] if o[0] == '-' else o) == additional
-                           for o in ordering):
-                    ordering.append(additional)
-
+        ordering = self.get_ordering(request, view, datatables_query['fields'])
+        if ordering:
             queryset = queryset.order_by(*ordering)
+
         return queryset
+
+    def get_q(self, datatables_query):
+        q = QMongoEngine()
+        for f in datatables_query['fields']:
+            if not f['searchable']:
+                continue
+            q |= f_search_q(f,
+                            datatables_query['search_value'],
+                            datatables_query['search_regex'],
+                            True)
+            q &= f_search_q(f,
+                            f.get('search_value'),
+                            f.get('search_regex', False),
+                            True)
+        return q
+
+    def get_ordering(self, request, view, fields):
+        """called by parse_query_params to get the ordering
+
+        return value must be a valid list of arguments for order_by on
+        a queryset
+
+        """
+        ordering = []
+        for field, dir_ in self.get_ordering_fields(request, view, fields):
+            ordering.append('%s%s' % (
+                '-' if dir_ == 'desc' else '',
+                field['name'][0]
+            ))
+        self.append_additional_ordering(ordering, view)
+        return ordering
 

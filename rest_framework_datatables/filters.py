@@ -236,7 +236,7 @@ class DatatablesFilterBackend(DatatablesBaseFilterBackend):
         return ordering
 
 
-class DatatablesFilterBackendMongoEngine(DatatablesFilter):
+class DatatablesFilterBackendMongoEngine(DatatablesBaseFilterBackend):
     """
     Filter that works with datatables mongoengine params.
     """
@@ -274,7 +274,7 @@ class DatatablesFilterBackendMongoEngine(DatatablesFilter):
 
         q = self.get_q(datatables_query)
         if q:
-            queryset = queryset.filter(q).distinct()
+            queryset = queryset.filter(q)
             filtered_count = queryset.count()
         else:
             filtered_count = filtered_count_before

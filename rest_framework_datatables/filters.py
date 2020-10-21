@@ -28,6 +28,7 @@ def f_search_q(f, search_value, search_regex=False, mongo_engine_search=False):
     if mongo_engine_search:
         search_q = QMongoEngine
     qs = []
+    unaccent = 'unaccent__' if f.get('unaccent') else ''
     if search_value and search_value != 'false':
         if search_regex:
             status, result = is_valid_regex(search_value)
@@ -36,10 +37,10 @@ def f_search_q(f, search_value, search_regex=False, mongo_engine_search=False):
                     if mongo_engine_search:
                         qs.append(QMongoEngine(**{'%s' % x: result}))
                     else:
-                        qs.append(Q(**{'%s__iregex' % x: search_value}))
+                        qs.append(Q(**{'%s__%siregex' % (x, unaccent): search_value}))
         else:
             for x in f['name']:
-                qs.append(search_q(**{'%s__icontains' % x: search_value}))
+                qs.append(search_q(**{'%s__%sicontains' % (x, unaccent): search_value}))
     return reduce(operator.or_, qs, search_q())
 
 
@@ -66,7 +67,7 @@ class DatatablesBaseFilterBackend(BaseFilterBackend):
             col = 'columns[%d][%s]'
             data = get_param(request, col % (i, 'data'))
             if data == "":  # null or empty string on datatables (JS) side
-                fields.append({'searchable': False, 'orderable': False})
+                fields.append({'searchable': False, 'orderable': False, 'unaccent': False})
                 i += 1
                 continue
             # break out only when there are no more fields to get.
@@ -90,6 +91,9 @@ class DatatablesBaseFilterBackend(BaseFilterBackend):
                 ) == 'true',
                 'orderable': get_param(
                     request, col % (i, 'orderable')
+                ) == 'true',
+                'unaccent': get_param(
+                    request, col % (i, 'unaccent'),
                 ) == 'true',
                 'search_value': get_param(
                     request, '%s[%s]' % (search_col, 'value')

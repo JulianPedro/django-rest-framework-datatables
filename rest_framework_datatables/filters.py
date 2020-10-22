@@ -24,11 +24,9 @@ def is_valid_regex(regex):
 
 def f_search_q(f, search_value, search_regex=False, mongo_engine_search=False):
     """helper function that returns a Q-object for a search value"""
-    search_q = Q
-    if mongo_engine_search:
-        search_q = QMongoEngine
+    search_q = QMongoEngine if mongo_engine_search else Q
+    unaccent = 'unaccent__' if not mongo_engine_search and f.get('unaccent') else ''
     qs = []
-    unaccent = 'unaccent__' if f.get('unaccent') else ''
     if search_value and search_value != 'false':
         if search_regex:
             status, result = is_valid_regex(search_value)
